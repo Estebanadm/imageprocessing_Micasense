@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 import numpy
 import skimage
 from skimage.transform import warp,matrix_transform,resize,FundamentalMatrixTransform,estimate_transform,ProjectiveTransform
-import mapboxgl
+import re
 import time
-import matplotlib.cm as cm
+import matplotlib as cm
 from PIL import ImageEnhance
 from PIL import Image as pilImage
 from IPython import get_ipython
@@ -79,6 +79,24 @@ def testing():
     testPanelDetection()
     print("Testing completed.\n")
 
+def getPrefixes(image_paths):
+     # Initialize a set to store unique prefixes
+    prefixes = set()
+
+    # Extract the prefixes from the image paths
+    for path in image_paths:
+        filename = os.path.basename(path)
+        match = re.match(r'(IMG_\d{4})_\d\.tif', filename)
+        if match:
+            prefixes.add(match.group(1))
+
+    # Sort the prefixes
+    sorted_prefixes = sorted(prefixes)
+
+    # Create a list of patterns based on the sorted prefixes
+    image_patterns = [f"{prefix}_*.tif" for prefix in sorted_prefixes]
+    return image_patterns
+
 def multispectralBandHistogram(thecapture, im_aligned, panchroCam, sharpened_stack):
     theColors = {'Blue': 'blue', 'Green': 'green', 'Red': 'red', \
              'Red edge': 'maroon', 'NIR': 'purple', 'Panchro': 'yellow', 'PanchroB': 'orange',\
@@ -147,37 +165,9 @@ def saveVisualizationOfAlignetImages(thecapture, im_aligned, panchroCam, sharpen
     if panchroCam:
         rgb_sharp = im_display_sharp[:,:,rgb_band_indices]
 
-    nir_band = thecapture.band_names_lower().index('nir')
-    red_band = thecapture.band_names_lower().index('red')
-
-    ndvi = (im_aligned[:,:,nir_band] - im_aligned[:,:,red_band]) / (im_aligned[:,:,nir_band] + im_aligned[:,:,red_band])
-
-    # for cir false color imagery, we normalize the NIR,R,G bands within themselves, which provides
-    # the classical CIR rendering where plants are red and soil takes on a blue tint
-    for i in cir_band_indices:
-        im_display[:,:,i] =  imageutils.normalize(im_aligned[:,:,i])
-
-    cir = im_display[:,:,cir_band_indices]
-    if panchroCam:
-        fig, (ax1,ax2) = plt.subplots(1, 2, figsize=figsize)
-    else:
-        fig, ax1 = plt.subplots(1, 1, figsize=figsize)
-    ax1.set_title("Red-Green-Blue Composite")
-    ax1.imshow(rgb)
-    if panchroCam:
-        ax2.set_title("Red-Green-Blue Composite (pan-sharpened)")
-        ax2.imshow(rgb_sharp)
-
-    fig, (ax3,ax4) = plt.subplots(1, 2, figsize=figsize)
-    ax3.set_title("NDVI")
-    ax3.imshow(ndvi)
-    ax4.set_title("Color Infrared (CIR) Composite")
-    ax4.imshow(cir)
-    plt.savefig('Results/AlignedVisualization/AlignedImages.png')
-
     return rgb_sharp
 
-def imageEnhancement(thecapture, panchroCam, rgb_sharp):
+def imageEnhancement(panchroCam, rgb_sharp, currImageName):
     if panchroCam:
         rgb = rgb_sharp
     # Create an enhanced version of the RGB render using an unsharp mask
@@ -192,15 +182,15 @@ def imageEnhancement(thecapture, panchroCam, rgb_sharp):
     gamma = 1.4
     gamma_corr_rgb = unsharp_rgb**(1.0/gamma)
     fig = plt.figure(figsize=figsize)
-    cv2.imwrite('Results/EnhancedImages/'+thecapture.uuid+'-enhanced.png', cv2.cvtColor(gamma_corr_rgb*255, cv2.COLOR_RGB2BGR))
+    cv2.imwrite('Results/EnhancedImages/'+currImageName+'-enhanced.png', cv2.cvtColor(gamma_corr_rgb*255, cv2.COLOR_RGB2BGR))
     # plt.imshow(gamma_corr_rgb, aspect='equal')
     # plt.axis('off')
     # plt.savefig('Results/EnhancedImages/'+thecapture.uuid+'-enhanced2.png')
     return gamma_corr_rgb
 
-def stackExport(thecapture, panchroCam):
+def stackExport(thecapture, panchroCam, currImageName):
     #set output name to unique capture ID, e.g. FWoNSvgDNBX63Xv378qs
-    outputName = thecapture.uuid
+    outputName = currImageName
 
     st = time.time()
     if panchroCam:
@@ -225,10 +215,8 @@ def save_array_as_png_pil(array, output_path):
     image = pilImage.fromarray(array_normalized)
     image.save(output_path)
     
-def save_overlay_as_png(imgbase_path, imgcolor_path, output_filename, alpha=1.0, colormap='viridis'):
-    """ Overlay an image with another image using a colormap and save as PNG """
-    
-    # Open the base image
+def save_overlay_as_png(imgbase_path, imgcolor_path, output_filename,minVal,maxVal, alpha=1.0, colormap='viridis'):
+   # Open the base image
     imgbase = pilImage.open(imgbase_path).convert("RGBA")
     
     # Open the overlay image and convert it to grayscale
@@ -239,21 +227,26 @@ def save_overlay_as_png(imgbase_path, imgcolor_path, output_filename, alpha=1.0,
         imgcolor = imgcolor.resize(imgbase.size, pilImage.ANTIALIAS)
 
     # Convert the grayscale image to a numpy array
-    imgcolor_np = np.array(imgcolor)
+    imgcolor_np = np.array(imgcolor).astype(np.float64)
     
     # Normalize the image to the range [0, 1]
     imgcolor_np = imgcolor_np / 255.0
-    
+
+    # Scale the normalized image to ensure minVal maps to 0 and maxVal maps to 1
+    imgcolor_np_normalized = (imgcolor_np - minVal) / (maxVal - minVal)
+    imgcolor_np_normalized = np.clip(imgcolor_np_normalized, 0, 1)  # Ensure values are within [0, 1]
+
     # Apply the colormap
-    cmap = cm.get_cmap(colormap)
-    imgcolor_colormap = cmap(imgcolor_np)
+    cmap = cm.colormaps[colormap]
+    imgcolor_colormap = cmap(imgcolor_np_normalized)  # Colormap expects values in [0, 1]
     
     # Convert the colormap image to RGBA format and then to a PIL image
     imgcolor_colormap = (imgcolor_colormap[:, :, :3] * 255).astype(np.uint8)
     imgcolor_colormap = pilImage.fromarray(imgcolor_colormap, mode="RGB").convert("RGBA")
     
     # Adjust the alpha of the overlay image
-    alpha_channel = ImageEnhance.Brightness(pilImage.fromarray((imgcolor_np * 255).astype(np.uint8), mode="L")).enhance(alpha)
+    alpha_channel = pilImage.fromarray((imgcolor_np_normalized * 255).astype(np.uint8), mode="L")
+    alpha_channel = ImageEnhance.Brightness(alpha_channel).enhance(alpha)
     imgcolor_colormap.putalpha(alpha_channel)
     
     # Overlay the images
@@ -262,83 +255,29 @@ def save_overlay_as_png(imgbase_path, imgcolor_path, output_filename, alpha=1.0,
     # Save the combined image
     combined.save(output_filename, format='PNG')
 
-def NDVIEnhancement(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gamma_corr_rgb):
-    figsize=(30,23)
-    nir_band = thecapture.band_names_lower().index('nir')
-    red_band = thecapture.band_names_lower().index('red')
+def imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, currImageName):
+    print("Aligning image "+ currImageName + "...")
 
-    thelayer = im_aligned
-    if panchroCam:
-        thelayer = sharpened_stack
-    np.seterr(divide='ignore', invalid='ignore') # ignore divide by zero errors in the index calculation
+    st = time.time()
 
-    # Compute Normalized Difference Vegetation Index (NDVI) from the NIR(3) and RED (2) bands
-    ndvi = (thelayer[:,:,nir_band] - thelayer[:,:,red_band]) / (thelayer[:,:,nir_band] + thelayer[:,:,red_band])
-    print("Image type:",img_type)
-
-    # remove shadowed areas (mask pixels with NIR reflectance < 20%))
-    # this does not seem to work on panchro stacks 
-    if img_type == 'reflectance':
-        ndvi = np.ma.masked_where(thelayer[:,:,nir_band] < 0.20, ndvi) 
-    elif img_type == 'radiance':
-        lower_pct_radiance = np.percentile(thelayer[:,:,nir_band],  10.0)
-        ndvi = np.ma.masked_where(thelayer[:,:,nir_band] < lower_pct_radiance, ndvi) 
-
-    min_display_ndvi = 0.45 # further mask soil by removing low-ndvi values
-    #min_display_ndvi = np.percentile(ndvi.flatten(),  5.0)  # modify with these percentilse to adjust contrast
-    max_display_ndvi = np.percentile(ndvi.flatten(), 99.5)  # for many images, 0.5 and 99.5 are good values
-    masked_ndvi = np.ma.masked_where(ndvi < min_display_ndvi, ndvi)
-
-    # #reduce the figure size to account for colorbar
-    figsize=np.asarray(figsize) - np.array([3,2])
-
-    #plot NDVI over an RGB basemap, with a colorbar showing the NDVI scale
-    fig, axis = plotutils.plot_overlay_withcolorbar(gamma_corr_rgb, 
-                                        masked_ndvi, 
-                                        figsize = (14,7), 
-                                        title = 'NDVI filtered to only plants over RGB base layer',
-                                        vmin = min_display_ndvi,
-                                        vmax = max_display_ndvi,
-                                        show=False)
-    fig.savefig("Results/Indexes/NDVI/Fig/"+thecapture.uuid+'_ndvi_over_rgb.png')
-    save_array_as_png_pil(masked_ndvi, "Results/Indexes/NDVI/Mask/"+ thecapture.uuid+'_NDVIMask.png')
-    cv2.imwrite('Results/Indexes/NDVI/Img/'+thecapture.uuid+'-enhanced.png', cv2.cvtColor(gamma_corr_rgb*255, cv2.COLOR_RGB2BGR))
-    save_overlay_as_png('Results/EnhancedImages/'+thecapture.uuid+'-enhanced.png',
-                        'Results/Indexes/NDVI/Mask/'+ thecapture.uuid+'_NDVIMask.png',
-                        'Results/Indexes/NDVI/Overlay/'+thecapture.uuid+'_NDVIOverlay.png')
+    sharpened_stack, upsampled = thecapture.radiometric_pan_sharpened_aligned_capture(warp_matrices=warp_matrices_SIFT, irradiance_list=irradiance_list, img_type=img_type)
+        
+    # we can also use the Rig Relatives from the image metadata to do a quick, rudimentary alignment 
+    #     warp_matrices0=thecapture.get_warp_matrices(ref_index=5)
+    #     sharpened_stack,upsampled = radiometric_pan_sharpen(thecapture,warp_matrices=warp_matrices0)
     
+    print("Pansharpened shape:", sharpened_stack.shape)
+    print("Upsampled shape:", upsampled.shape)
+    # re-assign to im_aligned to match rest of code 
+    im_aligned = upsampled
+    et = time.time()
+    elapsed_time = et - st
+    print('\nAlignment and pan-sharpening time:', int(elapsed_time), 'seconds\n')
+    
+    return im_aligned, sharpened_stack
 
 
-
-def NDREComputation(thecapture,gamma_corr_rgb,thelayer,nir_band,rededge_band, min_display_ndvi,ndvi):
-    # Compute Normalized Difference Red Edge Index from the NIR(3) and RedEdge(4) bands
-    rededge_band = thecapture.band_names_lower().index('red edge')
-    ndre = (thelayer[:,:,nir_band] - thelayer[:,:,rededge_band]) / (thelayer[:,:,nir_band] + thelayer[:,:,rededge_band])
-
-    # Mask areas with shadows and low NDVI to remove soil
-    masked_ndre = np.ma.masked_where(ndvi < min_display_ndvi, ndre)
-
-    # Compute a histogram
-    ndre_hist_min = np.min(np.percentile(masked_ndre,0.5))
-    ndre_hist_max = np.max(np.percentile(masked_ndre,99.5))
-    fig, axis = plt.subplots(1, 1, figsize=(10,4))
-    axis.hist(masked_ndre.ravel(), bins=512, range=(ndre_hist_min, ndre_hist_max))
-    plt.title("NDRE Histogram (filtered to only plants)")
-    plt.show()
-
-    min_display_ndre = np.percentile(masked_ndre, 5)
-    max_display_ndre = np.percentile(masked_ndre, 99.5)
-
-    BasePath = "Results/Indexes/NDVI/"
-
-    fig, axis = plotutils.plot_overlay_withcolorbar(gamma_corr_rgb, 
-                                        masked_ndre, 
-                                        figsize=(14,7), 
-                                        title='NDRE filtered to only plants over RGB base layer',
-                                        vmin=min_display_ndre,vmax=max_display_ndre)
-    fig.savefig("Results/Indexes/NDVI/"+thecapture.uuid+'_ndre_over_rgb.png')
-
-def Calybrate(panelImageName, currImageName, showMultispectralBandHistogram):
+def panelCalybration(panelImageName, currImageName):
     print("Calybration process started.\n")
     if '__IPYTHON__' in globals():
         ipython.magic('load_ext autoreload')
@@ -428,40 +367,147 @@ def Calybrate(panelImageName, currImageName, showMultispectralBandHistogram):
         if not warp_matrices_SIFT :
             print("Generating new warp matrices...")
             warp_matrices_SIFT = thecapture.SIFT_align_capture(min_matches = 10)
-            
-        sharpened_stack, upsampled = thecapture.radiometric_pan_sharpened_aligned_capture(warp_matrices=warp_matrices_SIFT, irradiance_list=irradiance_list, img_type=img_type)
-        
-    # we can also use the Rig Relatives from the image metadata to do a quick, rudimentary alignment 
-    #     warp_matrices0=thecapture.get_warp_matrices(ref_index=5)
-    #     sharpened_stack,upsampled = radiometric_pan_sharpen(thecapture,warp_matrices=warp_matrices0)
-
-        print("Pansharpened shape:", sharpened_stack.shape)
-        print("Upsampled shape:", upsampled.shape)
-        # re-assign to im_aligned to match rest of code 
-        im_aligned = upsampled
         et = time.time()
         elapsed_time = et - st
         print('Alignment and pan-sharpening time:', int(elapsed_time), 'seconds')
+            
+    im_aligned, sharpened_stack = imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, "Calibration")
 
-    if (showMultispectralBandHistogram):
-        multispectralBandHistogram(thecapture, im_aligned, panchroCam, sharpened_stack)
+    multispectralBandHistogram(thecapture, im_aligned, panchroCam, sharpened_stack)
+
+    return thecapture, panchroCam,img_type,irradiance_list,warp_matrices_SIFT
+
+def NDVIComputation(thecapture, im_aligned, panchroCam, sharpened_stack, img_type, gamma_corr_rgb, imageName):
+    figsize=(30,23)
+    nir_band = thecapture.band_names_lower().index('nir')
+    red_band = thecapture.band_names_lower().index('red')
+
+    thelayer = im_aligned
+    if panchroCam:
+        thelayer = sharpened_stack
+    np.seterr(divide='ignore', invalid='ignore') # ignore divide by zero errors in the index calculation
+
+    # Compute Normalized Difference Vegetation Index (NDVI) from the NIR(3) and RED (2) bands
+    ndvi = (thelayer[:,:,nir_band] - thelayer[:,:,red_band]) / (thelayer[:,:,nir_band] + thelayer[:,:,red_band])
+    print("Image type:",img_type)
+
+    # remove shadowed areas (mask pixels with NIR reflectance < 20%))
+    # this does not seem to work on panchro stacks 
+    if img_type == 'reflectance':
+        ndvi = np.ma.masked_where(thelayer[:,:,nir_band] < 0.20, ndvi)
+    elif img_type == 'radiance':
+        lower_pct_radiance = np.percentile(thelayer[:,:,nir_band],  10.0)
+        ndvi = np.ma.masked_where(thelayer[:,:,nir_band] < lower_pct_radiance, ndvi)
     
+    ndviCopy = np.copy(ndvi)
+    ndvi_hist_min = np.min(np.percentile(ndviCopy,0.5))
+    ndvi_hist_max = np.max(np.percentile(ndviCopy,99.5))
+
+    fig, axis = plt.subplots(1, 1, figsize=(10,4))
+
+    axis.hist(ndvi.ravel(), bins=512, range=(ndvi_hist_min, ndvi_hist_max))
+    
+    plt.title("NDVI Histogram")
+    plt.savefig('Results/Indexes/NDVI/Histogram/'+imageName+'_ndvi_histogram.png')
+
+    min_display_ndvi = 0.45 # further mask soil by removing low-ndvi values
+    #min_display_ndvi = np.percentile(ndvi.flatten(),  5.0)  # modify with these percentilse to adjust contrast
+    max_display_ndvi = np.percentile(ndviCopy.flatten(), 99.5)  # for many images, 0.5 and 99.5 are good values
+    masked_ndvi = np.ma.masked_where(ndvi < min_display_ndvi, ndvi)
+
+    # #reduce the figure size to account for colorbar
+    figsize=np.asarray(figsize) - np.array([3,2])
+
+    #plot NDVI over an RGB basemap, with a colorbar showing the NDVI scale
+    fig, axis = plotutils.plot_overlay_withcolorbar(gamma_corr_rgb, 
+                                        masked_ndvi, 
+                                        figsize = (14,7), 
+                                        title = 'NDVI filtered to only plants over RGB base layer',
+                                        vmin = min_display_ndvi,
+                                        vmax = max_display_ndvi,
+                                        show=False)
+    fig.savefig("Results/Indexes/NDVI/Fig/"+imageName+'_ndvi_over_rgb.png')
+    save_array_as_png_pil(masked_ndvi, "Results/Indexes/NDVI/Mask/"+ imageName+'_NDVIMask.png')
+    save_overlay_as_png('Results/EnhancedImages/'+imageName+'-enhanced.png',
+                        'Results/Indexes/NDVI/Mask/'+ imageName+'_NDVIMask.png',
+                        'Results/Indexes/NDVI/Overlay/'+imageName+'_NDVIOverlay.png',minVal=min_display_ndvi,maxVal = max_display_ndvi)
+    return ndvi, gamma_corr_rgb
+
+
+
+def NDREComputation(thecapture, im_aligned, gamma_corr_rgb, ndvi, imageName):
+    # Compute Normalized Difference Red Edge Index from the NIR(3) and RedEdge(4) bands
+    figsize=(30,23)
+    nir_band = thecapture.band_names_lower().index('nir')
+    rededge_band = thecapture.band_names_lower().index('red edge')
+
+    thelayer = im_aligned
+
+    min_display_ndvi = 0.45 # further mask soil by removing low-ndvi values
+
+    ndre = (thelayer[:,:,nir_band] - thelayer[:,:,rededge_band]) / (thelayer[:,:,nir_band] + thelayer[:,:,rededge_band])
+
+    # Mask areas with shadows and low NDVI to remove soil
+    
+    masked_ndre = np.ma.masked_where(ndvi < min_display_ndvi, ndre)
+
+    maskedNdreCopy= np.copy(masked_ndre)
+
+    # Compute a histogram
+    ndre_hist_min = np.min(np.percentile(maskedNdreCopy,0.5))
+    ndre_hist_max = np.max(np.percentile(maskedNdreCopy,99.5))
+
+    fig, axis = plt.subplots(1, 1, figsize=(10,4))
+    axis.hist(masked_ndre.ravel(), bins=512, range=(ndre_hist_min, ndre_hist_max))
+    plt.title("NDRE Histogram (filtered to only plants)")
+    plt.savefig('Results/Indexes/NDRE/Histogram/'+imageName+'_ndre_histogram.png')
+
+    
+    min_display_ndre = np.percentile(maskedNdreCopy, 5)
+    max_display_ndre = np.percentile(maskedNdreCopy, 99.5)
+
+    fig, axis = plotutils.plot_overlay_withcolorbar(gamma_corr_rgb, 
+                                        masked_ndre, 
+                                        figsize=(14,7), 
+                                        title='NDRE filtered to only plants over RGB base layer',
+                                        vmin=min_display_ndre,vmax=max_display_ndre,show=False)
+    fig.savefig("Results/Indexes/NDRE/Fig/"+imageName+'_ndre_over_rgb.png')
+    save_array_as_png_pil(masked_ndre, "Results/Indexes/NDRE/Mask/"+ imageName+'_NDREMask.png')
+    save_overlay_as_png('Results/EnhancedImages/'+imageName+'-enhanced.png',
+                        'Results/Indexes/NDRE/Mask/'+ imageName+'_NDREMask.png',
+                        'Results/Indexes/NDRE/Overlay/'+imageName+'_NDREOverlay.png',minVal=min_display_ndre,maxVal = max_display_ndre)
+
+
+def calculateIndexes(thecapture, panchroCam ,img_type, irradiance_list,warp_matrices_SIFT, saveName):
+    im_aligned, sharpened_stack = imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, saveName)
     rgb=saveVisualizationOfAlignetImages(thecapture, im_aligned, panchroCam, sharpened_stack)
-    gama_corr_rgb = imageEnhancement(thecapture, panchroCam, rgb)
-    stackExport(thecapture, panchroCam)
-    NDVIEnhancement(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb )
-
-
-
+    gama_corr_rgb = imageEnhancement(panchroCam, rgb, saveName)
+    stackExport(thecapture, panchroCam, saveName)
+    ndvi, gamma_corr_rgb= NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName )
+    NDREComputation(thecapture, im_aligned, gamma_corr_rgb, ndvi, saveName)
 
 
 
 def main(): 
     panelImageName = 'IMG_0000_*.tif'
     currImageName = 'IMG_0001_*.tif'
-    showMultispectralBandHistogram = True
-    # testing()
-    Calybrate(panelImageName, currImageName, showMultispectralBandHistogram)
 
+    all_images = glob.glob(os.path.join(imagePath, '*'))
+
+    imageNames=getPrefixes(all_images)  
+    imageNames.remove(panelImageName)
+
+    # testing()
+    thecapture, panchroCam,img_type,irradiance_list,warp_matrices_SIFT = panelCalybration(panelImageName, currImageName)
+
+    for imageName in imageNames:
+        saveName=imageName[:-6]
+        currImageNames = list(imagePath.glob(imageName))
+        currImageNames = [x.as_posix() for x in currImageNames]
+        thecapture = capture.Capture.from_filelist(currImageNames)
+        calculateIndexes(thecapture, panchroCam,img_type, irradiance_list, warp_matrices_SIFT, saveName)
+        import ipdb; ipdb.set_trace()
+
+    
 if __name__=="__main__": 
     main() 
