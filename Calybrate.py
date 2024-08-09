@@ -215,7 +215,7 @@ def save_array_as_png_pil(array, output_path):
     image = pilImage.fromarray(array_normalized)
     image.save(output_path)
     
-def save_overlay_as_png(imgbase_path, imgcolor_path, output_filename,minVal,maxVal, alpha=1.0, colormap='viridis'):
+def save_overlay_as_png(imgbase_path, imgcolor_path, output_filename,minVal,maxVal, alpha=1, colormap='viridis'):
    # Open the base image
     imgbase = pilImage.open(imgbase_path).convert("RGBA")
     
@@ -255,6 +255,43 @@ def save_overlay_as_png(imgbase_path, imgcolor_path, output_filename,minVal,maxV
     # Save the combined image
     combined.save(output_filename, format='PNG')
 
+def save_mask_and_overlay(imgbase_path, imgcolor, save_mask_path, save_overlay_path, vmin, vmax,colormap='viridis'):
+    # Load the base image from the saved PNG file
+    imgbase = pilImage.open(imgbase_path).convert("RGB")
+    imgbase = np.array(imgbase)
+
+    # Create the mask: mask where imgcolor is NaN or outside the vmin, vmax range
+    mask = np.ma.getmaskarray(np.ma.masked_invalid(imgcolor))
+    mask = mask.astype(np.uint8) * 255  # 255 where mask is invalid (NaN or < vmin)
+
+    # Save the mask
+    mask_image = pilImage.fromarray(mask)
+    mask_image.save(save_mask_path)
+
+    # Normalize imgcolor to range [0, 1] based on vmin and vmax
+    imgcolor_normalized = (imgcolor - vmin) / (vmax - vmin)
+    imgcolor_normalized = np.clip(imgcolor_normalized, 0, 1)  # Clip values outside [0, 1]
+
+    # Apply the colormap
+    cmap = cm.colormaps[colormap]
+    imgcolor_mapped = cmap(imgcolor_normalized)
+
+    # Convert colormap image to uint8
+    imgcolor_rgb = (imgcolor_mapped[:, :, :3] * 255).astype(np.uint8)  # Drop the alpha channel and scale to 255
+
+    # Ensure imgbase is RGB (3 channels)
+    imgbase_rgb = imgbase[:, :, :3] if imgbase.shape[2] == 4 else imgbase
+
+    # Apply the colormap only where the mask is 0 (indicating valid data)
+    overlay = np.where(mask[:, :, None] == 0, imgcolor_rgb, imgbase_rgb)
+
+    # Save the overlay
+    overlay_image = pilImage.fromarray(overlay.astype(np.uint8))
+    overlay_image.save(save_overlay_path)
+
+
+
+
 def imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, currImageName):
     print("Aligning image "+ currImageName + "...")
 
@@ -275,7 +312,6 @@ def imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, cur
     print('\nAlignment and pan-sharpening time:', int(elapsed_time), 'seconds\n')
     
     return im_aligned, sharpened_stack
-
 
 def panelCalybration(panelImageName, currImageName):
     print("Calybration process started.\n")
@@ -377,10 +413,20 @@ def panelCalybration(panelImageName, currImageName):
 
     return thecapture, panchroCam,img_type,irradiance_list,warp_matrices_SIFT
 
-def NDVIComputation(thecapture, im_aligned, panchroCam, sharpened_stack, img_type, gamma_corr_rgb, imageName):
+def NDVIComputation(thecapture, im_aligned, panchroCam, sharpened_stack, img_type, gamma_corr_rgb, imageName, band='red'):
     figsize=(30,23)
+
+    if band=='red':
+        calculateIndex='NDVI'
+    elif band=='green':
+        calculateIndex='GNDVI'
+    elif band=='blue':
+        calculateIndex='BNDVI'
+    
+    print("\nCalculating ",calculateIndex,"...")
+
     nir_band = thecapture.band_names_lower().index('nir')
-    red_band = thecapture.band_names_lower().index('red')
+    selected_band = thecapture.band_names_lower().index(band)
 
     thelayer = im_aligned
     if panchroCam:
@@ -388,8 +434,8 @@ def NDVIComputation(thecapture, im_aligned, panchroCam, sharpened_stack, img_typ
     np.seterr(divide='ignore', invalid='ignore') # ignore divide by zero errors in the index calculation
 
     # Compute Normalized Difference Vegetation Index (NDVI) from the NIR(3) and RED (2) bands
-    ndvi = (thelayer[:,:,nir_band] - thelayer[:,:,red_band]) / (thelayer[:,:,nir_band] + thelayer[:,:,red_band])
-    print("Image type:",img_type)
+    ndvi = (thelayer[:,:,nir_band] - thelayer[:,:,selected_band]) / (thelayer[:,:,nir_band] + thelayer[:,:,selected_band])
+    # print("Image type:",img_type)
 
     # remove shadowed areas (mask pixels with NIR reflectance < 20%))
     # this does not seem to work on panchro stacks 
@@ -407,8 +453,11 @@ def NDVIComputation(thecapture, im_aligned, panchroCam, sharpened_stack, img_typ
 
     axis.hist(ndvi.ravel(), bins=512, range=(ndvi_hist_min, ndvi_hist_max))
     
-    plt.title("NDVI Histogram")
-    plt.savefig('Results/Indexes/NDVI/Histogram/'+imageName+'_ndvi_histogram.png')
+    
+    
+    plt.title(calculateIndex+" Histogram")
+    baseFolder='Results/Indexes/'+calculateIndex+'/'
+    plt.savefig(baseFolder+'Histogram/'+imageName+'_histogram.png')
 
     min_display_ndvi = 0.45 # further mask soil by removing low-ndvi values
     #min_display_ndvi = np.percentile(ndvi.flatten(),  5.0)  # modify with these percentilse to adjust contrast
@@ -422,18 +471,25 @@ def NDVIComputation(thecapture, im_aligned, panchroCam, sharpened_stack, img_typ
     fig, axis = plotutils.plot_overlay_withcolorbar(gamma_corr_rgb, 
                                         masked_ndvi, 
                                         figsize = (14,7), 
-                                        title = 'NDVI filtered to only plants over RGB base layer',
+                                        title = calculateIndex + ' filtered to only plants over RGB base layer',
                                         vmin = min_display_ndvi,
                                         vmax = max_display_ndvi,
                                         show=False)
-    fig.savefig("Results/Indexes/NDVI/Fig/"+imageName+'_ndvi_over_rgb.png')
-    save_array_as_png_pil(masked_ndvi, "Results/Indexes/NDVI/Mask/"+ imageName+'_NDVIMask.png')
-    save_overlay_as_png('Results/EnhancedImages/'+imageName+'-enhanced.png',
-                        'Results/Indexes/NDVI/Mask/'+ imageName+'_NDVIMask.png',
-                        'Results/Indexes/NDVI/Overlay/'+imageName+'_NDVIOverlay.png',minVal=min_display_ndvi,maxVal = max_display_ndvi)
-    return ndvi, gamma_corr_rgb
+    
+    fig.savefig(baseFolder+ "Fig/"+imageName+'_'+calculateIndex+'_over_rgb.png')
+    save_mask_and_overlay('Results/EnhancedImages/'+imageName+'-enhanced.png',
+                           masked_ndvi,
+                           baseFolder+"Mask/"+ imageName+'_Mask.png',
+                           baseFolder+'Overlay/'+imageName+'_Overlay.png',
+                           min_display_ndvi,
+                           max_display_ndvi)
+    # save_array_as_png_pil(masked_ndvi, baseFolder+"Mask/"+ imageName+'_Mask.png')
+    # save_overlay_as_png('Results/EnhancedImages/'+imageName+'-enhanced.png',
+    #                     baseFolder+'Mask/'+ imageName+'_Mask.png',
+    #                     baseFolder+'Overlay/'+imageName+'_Overlay.png',minVal=min_display_ndvi,maxVal = max_display_ndvi)
+    print(calculateIndex," Computation completed.\n")
 
-
+    return ndvi
 
 def NDREComputation(thecapture, im_aligned, gamma_corr_rgb, ndvi, imageName):
     # Compute Normalized Difference Red Edge Index from the NIR(3) and RedEdge(4) bands
@@ -477,14 +533,17 @@ def NDREComputation(thecapture, im_aligned, gamma_corr_rgb, ndvi, imageName):
                         'Results/Indexes/NDRE/Mask/'+ imageName+'_NDREMask.png',
                         'Results/Indexes/NDRE/Overlay/'+imageName+'_NDREOverlay.png',minVal=min_display_ndre,maxVal = max_display_ndre)
 
+    print("NDRE Computation completed.\n")
 
 def calculateIndexes(thecapture, panchroCam ,img_type, irradiance_list,warp_matrices_SIFT, saveName):
     im_aligned, sharpened_stack = imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, saveName)
     rgb=saveVisualizationOfAlignetImages(thecapture, im_aligned, panchroCam, sharpened_stack)
     gama_corr_rgb = imageEnhancement(panchroCam, rgb, saveName)
     stackExport(thecapture, panchroCam, saveName)
-    ndvi, gamma_corr_rgb= NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName )
-    NDREComputation(thecapture, im_aligned, gamma_corr_rgb, ndvi, saveName)
+    ndvi=NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='red')
+    NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='green')
+    NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='blue')
+    # NDREComputation(thecapture, im_aligned, gama_corr_rgb, ndvi, saveName)
 
 
 
