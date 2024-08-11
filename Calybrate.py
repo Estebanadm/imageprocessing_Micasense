@@ -3,20 +3,22 @@ import exiftool
 import os, glob
 import numpy as np
 import pyzbar.pyzbar as pyzbar
-import matplotlib.pyplot as plt
-import numpy
-import skimage
 from skimage.transform import warp,matrix_transform,resize,FundamentalMatrixTransform,estimate_transform,ProjectiveTransform
 import re
+import os
 import time
+import json
 import matplotlib as cm
-from PIL import ImageEnhance
 from PIL import Image as pilImage
 from IPython import get_ipython
 from pathlib import Path
 from IPython.display import display
+import pandas as pd
 from skimage.transform import ProjectiveTransform
 import matplotlib.pyplot as plt
+from ipywidgets import FloatProgress, Layout
+from IPython.display import display
+import math
 import micasense.imageset as imageset
 from micasense.image import Image
 from micasense.panel import Panel
@@ -206,55 +208,6 @@ def stackExport(thecapture, panchroCam, currImageName):
     elapsed_time = et - st
     print("Time to save stacks:", int(elapsed_time), "seconds.")
 
-def save_array_as_png_pil(array, output_path):
-    # Normalize the array to the range [0, 255]
-    array_normalized = np.clip(array, 0, 1)  # Ensure values are between 0 and 1
-    array_normalized = (array_normalized * 255).astype(np.uint8)  # Scale to 0-255
-
-    # Convert to image
-    image = pilImage.fromarray(array_normalized)
-    image.save(output_path)
-    
-def save_overlay_as_png(imgbase_path, imgcolor_path, output_filename,minVal,maxVal, alpha=1, colormap='viridis'):
-   # Open the base image
-    imgbase = pilImage.open(imgbase_path).convert("RGBA")
-    
-    # Open the overlay image and convert it to grayscale
-    imgcolor = pilImage.open(imgcolor_path).convert("L")
-    
-    # Resize overlay to match base image if necessary
-    if imgbase.size != imgcolor.size:
-        imgcolor = imgcolor.resize(imgbase.size, pilImage.ANTIALIAS)
-
-    # Convert the grayscale image to a numpy array
-    imgcolor_np = np.array(imgcolor).astype(np.float64)
-    
-    # Normalize the image to the range [0, 1]
-    imgcolor_np = imgcolor_np / 255.0
-
-    # Scale the normalized image to ensure minVal maps to 0 and maxVal maps to 1
-    imgcolor_np_normalized = (imgcolor_np - minVal) / (maxVal - minVal)
-    imgcolor_np_normalized = np.clip(imgcolor_np_normalized, 0, 1)  # Ensure values are within [0, 1]
-
-    # Apply the colormap
-    cmap = cm.colormaps[colormap]
-    imgcolor_colormap = cmap(imgcolor_np_normalized)  # Colormap expects values in [0, 1]
-    
-    # Convert the colormap image to RGBA format and then to a PIL image
-    imgcolor_colormap = (imgcolor_colormap[:, :, :3] * 255).astype(np.uint8)
-    imgcolor_colormap = pilImage.fromarray(imgcolor_colormap, mode="RGB").convert("RGBA")
-    
-    # Adjust the alpha of the overlay image
-    alpha_channel = pilImage.fromarray((imgcolor_np_normalized * 255).astype(np.uint8), mode="L")
-    alpha_channel = ImageEnhance.Brightness(alpha_channel).enhance(alpha)
-    imgcolor_colormap.putalpha(alpha_channel)
-    
-    # Overlay the images
-    combined = pilImage.alpha_composite(imgbase, imgcolor_colormap)
-    
-    # Save the combined image
-    combined.save(output_filename, format='PNG')
-
 def save_mask_and_overlay(imgbase_path, imgcolor, save_mask_path, save_overlay_path, vmin, vmax,colormap='viridis'):
     # Load the base image from the saved PNG file
     imgbase = pilImage.open(imgbase_path).convert("RGB")
@@ -288,9 +241,6 @@ def save_mask_and_overlay(imgbase_path, imgcolor, save_mask_path, save_overlay_p
     # Save the overlay
     overlay_image = pilImage.fromarray(overlay.astype(np.uint8))
     overlay_image.save(save_overlay_path)
-
-
-
 
 def imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, currImageName):
     print("Aligning image "+ currImageName + "...")
@@ -460,7 +410,7 @@ def NDVIComputation(thecapture, im_aligned, panchroCam, sharpened_stack, img_typ
     plt.savefig(baseFolder+'Histogram/'+imageName+'_histogram.png')
 
     min_display_ndvi = 0.45 # further mask soil by removing low-ndvi values
-    #min_display_ndvi = np.percentile(ndvi.flatten(),  5.0)  # modify with these percentilse to adjust contrast
+    # min_display_ndvi = np.percentile(ndviCopy.flatten(),  5.0)  # modify with these percentilse to adjust contrast
     max_display_ndvi = np.percentile(ndviCopy.flatten(), 99.5)  # for many images, 0.5 and 99.5 are good values
     masked_ndvi = np.ma.masked_where(ndvi < min_display_ndvi, ndvi)
 
@@ -483,10 +433,6 @@ def NDVIComputation(thecapture, im_aligned, panchroCam, sharpened_stack, img_typ
                            baseFolder+'Overlay/'+imageName+'_Overlay.png',
                            min_display_ndvi,
                            max_display_ndvi)
-    # save_array_as_png_pil(masked_ndvi, baseFolder+"Mask/"+ imageName+'_Mask.png')
-    # save_overlay_as_png('Results/EnhancedImages/'+imageName+'-enhanced.png',
-    #                     baseFolder+'Mask/'+ imageName+'_Mask.png',
-    #                     baseFolder+'Overlay/'+imageName+'_Overlay.png',minVal=min_display_ndvi,maxVal = max_display_ndvi)
     print(calculateIndex," Computation completed.\n")
 
     return ndvi
@@ -522,18 +468,71 @@ def NDREComputation(thecapture, im_aligned, gamma_corr_rgb, ndvi, imageName):
     min_display_ndre = np.percentile(maskedNdreCopy, 5)
     max_display_ndre = np.percentile(maskedNdreCopy, 99.5)
 
+    baseFolder='Results/Indexes/NDRE/'
+
     fig, axis = plotutils.plot_overlay_withcolorbar(gamma_corr_rgb, 
                                         masked_ndre, 
                                         figsize=(14,7), 
                                         title='NDRE filtered to only plants over RGB base layer',
                                         vmin=min_display_ndre,vmax=max_display_ndre,show=False)
-    fig.savefig("Results/Indexes/NDRE/Fig/"+imageName+'_ndre_over_rgb.png')
-    save_array_as_png_pil(masked_ndre, "Results/Indexes/NDRE/Mask/"+ imageName+'_NDREMask.png')
-    save_overlay_as_png('Results/EnhancedImages/'+imageName+'-enhanced.png',
-                        'Results/Indexes/NDRE/Mask/'+ imageName+'_NDREMask.png',
-                        'Results/Indexes/NDRE/Overlay/'+imageName+'_NDREOverlay.png',minVal=min_display_ndre,maxVal = max_display_ndre)
+    fig.savefig(baseFolder+"Fig/"+imageName+'_ndre_over_rgb.png')
+
+    save_mask_and_overlay('Results/EnhancedImages/'+imageName+'-enhanced.png',
+                           masked_ndre,
+                           baseFolder+"Mask/"+ imageName+'_Mask.png',
+                           baseFolder+'Overlay/'+imageName+'_Overlay.png',
+                           min_display_ndre,
+                           max_display_ndre)
 
     print("NDRE Computation completed.\n")
+
+def createGeoJson():
+    ## This progress widget is used for display of the long-running process
+    print("Creating GeoJson file...")
+    st = time.time()
+    f = FloatProgress(min=0, max=1, layout=Layout(width='100%'), description="Loading")
+    def update_f(val):
+        if (val - f.value) > 0.005 or val == 1: #reduces cpu usage from updating the progressbar by 10x
+            f.value=val
+
+    images_dir = os.path.expanduser(os.path.join('.','data','ALTUM-PT')) 
+    imgset = imageset.ImageSet.from_directory(images_dir, progress_callback=update_f)
+
+    data, columns = imgset.as_nested_lists()
+    print("Columns: {}".format(columns))
+    max_lat = max([point[1] for point in data])
+    min_lat = min([point[1] for point in data])
+    max_lon = max([point[2] for point in data])
+    min_lon = min([point[2] for point in data])
+    print("Latitude range: {} to {}".format(min_lat, max_lat))
+    print("Longitude range: {} to {}".format(min_lon, max_lon))
+
+    # Define the GeoJSON structure in the specified format
+    geojson = {
+        "geodesic": False,
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [min_lon, min_lat],  # Bottom-left corner
+                [max_lon, min_lat],  # Bottom-right corner
+                [max_lon, max_lat],  # Top-right corner
+                [min_lon, max_lat],  # Top-left corner
+                [min_lon, min_lat]   # Closing the polygon (same as bottom-left corner)
+            ]
+        ]
+    }
+
+    # Save the GeoJSON structure to a file
+    output_file = 'Results/bounding_box.geojson'
+    with open(output_file, 'w') as f:
+        json.dump(geojson, f, indent=4)
+ 
+    et = time.time()
+    elapsed_time = et - st
+
+
+    print(f"GeoJSON file '{output_file}' has been created in", int(elapsed_time), 'seconds\n')
+
 
 def calculateIndexes(thecapture, panchroCam ,img_type, irradiance_list,warp_matrices_SIFT, saveName):
     im_aligned, sharpened_stack = imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, saveName)
@@ -543,7 +542,8 @@ def calculateIndexes(thecapture, panchroCam ,img_type, irradiance_list,warp_matr
     ndvi=NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='red')
     NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='green')
     NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='blue')
-    # NDREComputation(thecapture, im_aligned, gama_corr_rgb, ndvi, saveName)
+    NDREComputation(thecapture, im_aligned, gama_corr_rgb, ndvi, saveName)
+    
 
 
 
@@ -557,16 +557,20 @@ def main():
     imageNames.remove(panelImageName)
 
     # testing()
+    createGeoJson()
+
     thecapture, panchroCam,img_type,irradiance_list,warp_matrices_SIFT = panelCalybration(panelImageName, currImageName)
 
+    st = time.time()
     for imageName in imageNames:
         saveName=imageName[:-6]
         currImageNames = list(imagePath.glob(imageName))
         currImageNames = [x.as_posix() for x in currImageNames]
         thecapture = capture.Capture.from_filelist(currImageNames)
         calculateIndexes(thecapture, panchroCam,img_type, irradiance_list, warp_matrices_SIFT, saveName)
-        import ipdb; ipdb.set_trace()
-
+    et = time.time()
+    elapsed_time = et - st
+    print("Total time for calculating indexes", int(elapsed_time), 'seconds\n')
     
 if __name__=="__main__": 
     main() 
