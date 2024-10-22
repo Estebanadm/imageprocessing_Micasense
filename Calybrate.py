@@ -27,6 +27,9 @@ import micasense.utils as msutils
 import micasense.plotutils as plotutils
 import micasense.metadata as metadata
 import micasense.capture as capture
+import skimage
+from skimage.transform import warp,matrix_transform,resize,FundamentalMatrixTransform,estimate_transform,ProjectiveTransform
+
 
 
 
@@ -185,6 +188,7 @@ def imageEnhancement(panchroCam, rgb_sharp, currImageName):
     gamma_corr_rgb = unsharp_rgb**(1.0/gamma)
     fig = plt.figure(figsize=figsize)
     cv2.imwrite('Results/EnhancedImages/'+currImageName+'-enhanced.png', cv2.cvtColor(gamma_corr_rgb*255, cv2.COLOR_RGB2BGR))
+
     # plt.imshow(gamma_corr_rgb, aspect='equal')
     # plt.axis('off')
     # plt.savefig('Results/EnhancedImages/'+thecapture.uuid+'-enhanced2.png')
@@ -199,8 +203,8 @@ def stackExport(thecapture, panchroCam, currImageName):
         # in this example, we can export both a pan-sharpened stack and an upsampled stack
         # so you can compare them in GIS. In practice, you would typically only output the pansharpened stack 
         print(outputName+"-pansharpened.tif")
-        thecapture.save_capture_as_stack("Results/Pan Sharpened Stacks/"+outputName+"-pansharpened.tif", sort_by_wavelength=True, pansharpen=True)
-        thecapture.save_capture_as_stack("Results/Pan Sharpened Stacks/"+outputName+"-upsampled.tif", sort_by_wavelength=True, pansharpen=False)
+        # thecapture.save_capture_as_stack("Results/Pan Sharpened Stacks/"+thecapture.uuid+".tif", sort_by_wavelength=True, pansharpen=True)
+        # thecapture.save_capture_as_stack("Results/Pan Sharpened Stacks/"+outputName+"-upsampled.tif", sort_by_wavelength=True, pansharpen=False)
     else:
         thecapture.save_capture_as_stack(outputName+"-noPanels.tif", sort_by_wavelength=True)
 
@@ -257,6 +261,8 @@ def imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, cur
     print("Upsampled shape:", upsampled.shape)
     # re-assign to im_aligned to match rest of code 
     im_aligned = upsampled
+
+    stackExport(thecapture, True, thecapture.uuid)
     et = time.time()
     elapsed_time = et - st
     print('\nAlignment and pan-sharpening time:', int(elapsed_time), 'seconds\n')
@@ -356,6 +362,21 @@ def panelCalybration(panelImageName, currImageName):
         et = time.time()
         elapsed_time = et - st
         print('Alignment and pan-sharpening time:', int(elapsed_time), 'seconds')
+    if panchroCam:
+        working_wm = warp_matrices_SIFT
+    else:
+        working_wm = warp_matrices
+    if not Path('./' + warp_matrices_filename).is_file():
+        temp_matrices = []
+        for x in working_wm:
+            if isinstance(x, np.ndarray):
+                temp_matrices.append(x)
+            if isinstance(x, skimage.transform._geometric.ProjectiveTransform):
+                temp_matrices.append(x.params)
+        np.save(warp_matrices_filename, np.array(temp_matrices, dtype=object), allow_pickle=True)
+        print("Saved to", Path('./' + warp_matrices_filename).resolve())
+    else:
+        print("Matrices already exist at",Path('./' + warp_matrices_filename).resolve())
             
     im_aligned, sharpened_stack = imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, "Calibration")
 
@@ -418,6 +439,8 @@ def NDVIComputation(thecapture, im_aligned, panchroCam, sharpened_stack, img_typ
     figsize=np.asarray(figsize) - np.array([3,2])
 
     #plot NDVI over an RGB basemap, with a colorbar showing the NDVI scale
+
+    print(min_display_ndvi, max_display_ndvi)
     fig, axis = plotutils.plot_overlay_withcolorbar(gamma_corr_rgb, 
                                         masked_ndvi, 
                                         figsize = (14,7), 
@@ -538,18 +561,19 @@ def calculateIndexes(thecapture, panchroCam ,img_type, irradiance_list,warp_matr
     im_aligned, sharpened_stack = imageAlignment(thecapture, irradiance_list,img_type, warp_matrices_SIFT, saveName)
     rgb=saveVisualizationOfAlignetImages(thecapture, im_aligned, panchroCam, sharpened_stack)
     gama_corr_rgb = imageEnhancement(panchroCam, rgb, saveName)
-    stackExport(thecapture, panchroCam, saveName)
-    ndvi=NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='red')
-    NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='green')
-    NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='blue')
-    NDREComputation(thecapture, im_aligned, gama_corr_rgb, ndvi, saveName)
+    # stackExport(thecapture, panchroCam, saveName)
+    # ndvi=NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='red')
+    # NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='green')
+    # NDVIComputation(thecapture, im_aligned , panchroCam, sharpened_stack,img_type,gama_corr_rgb, saveName, band='blue')
+    # NDREComputation(thecapture, im_aligned, gama_corr_rgb, ndvi, saveName)
+    plt.close('all')
     
 
 
 
 def main(): 
     panelImageName = 'IMG_0000_*.tif'
-    currImageName = 'IMG_0001_*.tif'
+    currImageName = 'IMG_0003_*.tif'
 
     all_images = glob.glob(os.path.join(imagePath, '*'))
 
@@ -557,7 +581,7 @@ def main():
     imageNames.remove(panelImageName)
 
     # testing()
-    createGeoJson()
+    # createGeoJson()
 
     thecapture, panchroCam,img_type,irradiance_list,warp_matrices_SIFT = panelCalybration(panelImageName, currImageName)
 
